@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Electron File Manager</title>
+  <style>
+    :root {
+      --pane-width: 48%;
+      --border-color: #ddd;
+      --active-pane-bg: #f0f7ff;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      overflow: hidden;
+      background: #f8f8f8;
+    }
+    .header {
+      background: #f0f0f0;
+      padding: 10px 15px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      gap: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .container {
+      display: flex;
+      height: calc(100vh - 51px);
+    }
+    .pane {
+      width: var(--pane-width);
+      display: flex;
+      flex-direction: column;
+      background: white;
+    }
+    .pane.active {
+      background: var(--active-pane-bg);
+    }
+    .pane-header {
+      padding: 8px 10px;
+      background: #eaeaea;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .path-bar {
+      flex-grow: 1;
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: white;
+      font-size: 14px;
+    }
+    .nav-button {
+      padding: 5px 10px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .nav-button:hover {
+      background: #f5f5f5;
+    }
+    .file-list {
+      flex-grow: 1;
+      overflow-y: auto;
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .file-item {
+      padding: 8px 10px;
+      border-bottom: 1px solid #eee;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .file-item:hover {
+      background-color: #f5f5f5;
+    }
+    .file-item.selected {
+      background-color: #e0edff;
+    }
+    .file-item.error {
+      color: #999;
+    }
+    .file-icon {
+      margin-right: 8px;
+      width: 20px;
+      text-align: center;
+    }
+    .file-name {
+      flex-grow: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .file-size {
+      color: #666;
+      font-size: 13px;
+      width: 80px;
+      text-align: right;
+      margin-right: 15px;
+    }
+    .file-date {
+      color: #666;
+      font-size: 13px;
+      width: 180px;
+      text-align: right;
+    }
+    .divider {
+      width: 4%;
+      background: #f0f0f0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+    }
+    .divider::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      border-left: 1px solid var(--border-color);
+    }
+    .toolbar-btn {
+      padding: 6px 12px;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .toolbar-btn:hover {
+      background: #f5f5f5;
+    }
+    .status-bar {
+      padding: 6px 10px;
+      background: #f0f0f0;
+      border-top: 1px solid var(--border-color);
+      font-size: 12px;
+      color: #666;
+    }
+    .empty-message {
+      padding: 20px;
+      text-align: center;
+      color: #999;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <button class="toolbar-btn" id="new-folder">
+      <span>📁</span> New Folder
+    </button>
+    <button class="toolbar-btn" id="delete-btn">
+      <span>🗑️</span> Delete
+    </button>
+    <button class="toolbar-btn" id="refresh-btn">
+      <span>🔄</span> Refresh
+    </button>
+  </div>
+  
+  <div class="container">
+    <div class="pane active" id="left-pane">
+      <div class="pane-header">
+        <select class="path-bar" id="left-drives"></select>
+        <button class="nav-button" id="left-up">↑</button>
+        <button class="nav-button" id="left-home">🏠</button>
+      </div>
+      <ul class="file-list" id="left-list"></ul>
+      <div class="status-bar" id="left-status"></div>
+    </div>
+    
+    <div class="divider"></div>
+    
+    <div class="pane" id="right-pane">
+      <div class="pane-header">
+        <select class="path-bar" id="right-drives"></select>
+        <button class="nav-button" id="right-up">↑</button>
+        <button class="nav-button" id="right-home">🏠</button>
+      </div>
+      <ul class="file-list" id="right-list"></ul>
+      <div class="status-bar" id="right-status"></div>
+    </div>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+    const path = require('path');
+    
+    // State management
+    const state = {
+      left: { path: '', files: [], selected: null },
+      right: { path: '', files: [], selected: null },
+      activePane: 'left'
+    };
+    
+    // DOM Elements
+    const elements = {
+      leftList: document.getElementById('left-list'),
+      rightList: document.getElementById('right-list'),
+      leftDrives: document.getElementById('left-drives'),
+      rightDrives: document.getElementById('right-drives'),
+      leftUp: document.getElementById('left-up'),
+      rightUp: document.getElementById('right-up'),
+      leftHome: document.getElementById('left-home'),
+      rightHome: document.getElementById('right-home'),
+      deleteBtn: document.getElementById('delete-btn'),
+      newFolderBtn: document.getElementById('new-folder'),
+      refreshBtn: document.getElementById('refresh-btn'),
+      leftStatus: document.getElementById('left-status'),
+      rightStatus: document.getElementById('right-status'),
+      leftPane: document.getElementById('left-pane'),
+      rightPane: document.getElementById('right-pane')
+    };
+    
+    // Initialize
+    window.onload = async () => {
+      // Get home directory from main process
+      const homeDir = await ipcRenderer.invoke('get-home-dir');
+      state.left.path = homeDir;
+      state.right.path = homeDir;
+      
+      loadDrives();
+      await loadDirectory('left', state.left.path);
+      await loadDirectory('right', state.right.path);
+      
+      // Event listeners
+      elements.leftList.addEventListener('dblclick', handleItemDoubleClick);
+      elements.rightList.addEventListener('dblclick', handleItemDoubleClick);
+      elements.leftList.addEventListener('click', handleItemClick);
+      elements.rightList.addEventListener('click', handleItemClick);
+      elements.leftDrives.addEventListener('change', (e) => navigateTo('left', e.target.value));
+      elements.rightDrives.addEventListener('change', (e) => navigateTo('right', e.target.value));
+      elements.leftUp.addEventListener('click', () => navigateUp('left'));
+      elements.rightUp.addEventListener('click', () => navigateUp('right'));
+      elements.leftHome.addEventListener('click', () => navigateToHome('left'));
+      elements.rightHome.addEventListener('click', () => navigateToHome('right'));
+      elements.deleteBtn.addEventListener('click', deleteSelected);
+      elements.newFolderBtn.addEventListener('click', createNewFolder);
+      elements.refreshBtn.addEventListener('click', refreshCurrentPane);
+      
+      document.addEventListener('keydown', handleKeyPress);
+      
+      document.addEventListener('click', (e) => {
+        if (e.target.closest('#left-pane')) setActivePane('left');
+        if (e.target.closest('#right-pane')) setActivePane('right');
+      });
+    };
+    
+    // Set active pane
+    function setActivePane(pane) {
+      state.activePane = pane;
+      elements.leftPane.classList.toggle('active', pane === 'left');
+      elements.rightPane.classList.toggle('active', pane === 'right');
+    }
+    
+    // Load directory contents
+    async function loadDirectory(side, dirPath) {
+      try {
+        state[side].path = dirPath;
+        state[side].files = await ipcRenderer.invoke('read-dir', dirPath);
+        renderFileList(side);
+        updateDriveSelection(side, dirPath);
+        updateStatusBar(side);
+      } catch (error) {
+        console.error(error);
+        ipcRenderer.invoke('show-error-dialog', `Error accessing directory: ${error.message}`);
+      }
+    }
+    
+    // Render file list
+    function renderFileList(side) {
+      const listElement = elements[`${side}List`];
+      const files = state[side].files;
+      
+      if (files.length === 0) {
+        listElement.innerHTML = `<div class="empty-message">Empty directory</div>`;
+        return;
+      }
+      
+      listElement.innerHTML = '';
+      
+      // Add parent directory entry
+      const parentPath = path.dirname(state[side].path);
+      if (parentPath !== state[side].path) {
+        const parentItem = document.createElement('li');
+        parentItem.className = 'file-item';
+        parentItem.dataset.path = parentPath;
+        parentItem.innerHTML = `
+          <div class="file-icon">📁</div>
+          <div class="file-name">..</div>
+          <div class="file-size"></div>
+          <div class="file-date"></div>
+        `;
+        listElement.appendChild(parentItem);
+      }
+      
+      // Add files and directories
+      files.forEach(file => {
+        const li = document.createElement('li');
+        li.className = 'file-item';
+        if (file.error) li.classList.add('error');
+        if (file.path === state[side].selected) li.classList.add('selected');
+        li.dataset.path = file.path;
+        
+        li.innerHTML = `
+          <div class="file-icon">${file.isDirectory ? '📁' : '📄'}</div>
+          <div class="file-name">${file.name}${file.error ? ' (access denied)' : ''}</div>
+          <div class="file-size">${file.isFile ? formatSize(file.size) : ''}</div>
+          <div class="file-date">${file.modified.toLocaleString()}</div>
+        `;
+        
+        listElement.appendChild(li);
+      });
+    }
+    
+    // Format file size
+    function formatSize(bytes) {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+    
+    // Handle item click
+    function handleItemClick(e) {
+      const fileItem = e.target.closest('.file-item');
+      if (!fileItem) return;
+      
+      const filePath = fileItem.dataset.path;
+      const side = e.currentTarget === elements.leftList ? 'left' : 'right';
+      
+      // Clear previous selection
+      const listElement = elements[`${side}List`];
+      listElement.querySelectorAll('.selected').forEach(el => {
+        el.classList.remove('selected');
+      });
+      
+      // Set new selection
+      fileItem.classList.add('selected');
+      state[side].selected = filePath;
+    }
+    
+    // Handle item double-click
+    function handleItemDoubleClick(e) {
+      const fileItem = e.target.closest('.file-item');
+      if (!fileItem) return;
+      
+      const filePath = fileItem.dataset.path;
+      const side = e.currentTarget === elements.leftList ? 'left' : 'right';
+      
+      // Handle parent directory
+      if (fileItem.querySelector('.file-name').textContent === '..') {
+        navigateUp(side);
+        return;
+      }
+      
+      // Find file object
+      const file = state[side].files.find(f => f.path === filePath);
+      if (file && file.isDirectory) {
+        navigateTo(side, filePath);
+      } else if (file && !file.error) {
+        ipcRenderer.invoke('open-item', filePath);
+      }
+    }
+    
+    // Navigate to directory
+    function navigateTo(side, newPath) {
+      loadDirectory(side, newPath);
+      state[side].selected = null;
+    }
+    
+    // Navigate up
+    function navigateUp(side) {
+      const parentPath = path.dirname(state[side].path);
+      // Prevent going above root
+      if (parentPath !== state[side].path) {
+        navigateTo(side, parentPath);
+      }
+    }
+    
+    // Navigate to home directory
+    async function navigateToHome(side) {
+      const homeDir = await ipcRenderer.invoke('get-home-dir');
+      navigateTo(side, homeDir);
+    }
+    
+    // Load available drives
+    async function loadDrives() {
+      try {
+        const drives = await ipcRenderer.invoke('get-drives');
+        populateDrives(elements.leftDrives, drives, state.left.path);
+        populateDrives(elements.rightDrives, drives, state.right.path);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+    
+    // Populate drives dropdown
+    function populateDrives(element, drives, currentPath) {
+      element.innerHTML = '';
+      drives.forEach(drive => {
+        const option = document.createElement('option');
+        option.value = drive;
+        option.textContent = drive;
+        // Select current drive
+        if (currentPath && currentPath.startsWith(drive)) {
+          option.selected = true;
+        }
+        element.appendChild(option);
+      });
+    }
+    
+    // Update drive selection
+    function updateDriveSelection(side, currentPath) {
+      const element = elements[`${side}Drives`];
+      const drives = Array.from(element.options).map(opt => opt.value);
+      const currentDrive = drives.find(drive => currentPath.startsWith(drive));
+      if (currentDrive) {
+        element.value = currentDrive;
+      }
+    }
+    
+    // Update status bar
+    function updateStatusBar(side) {
+      const statusElement = elements[`${side}Status`];
+      const fileCount = state[side].files.filter(f => f.isFile).length;
+      const dirCount = state[side].files.filter(f => f.isDirectory).length;
+      
+      statusElement.textContent = 
+        `${state[side].path} | ${fileCount} file(s), ${dirCount} folder(s)`;
+    }
+    
+    // Delete selected items
+    async function deleteSelected() {
+      const side = state.activePane;
+      const selectedPath = state[side].selected;
+      
+      if (!selectedPath) {
+        ipcRenderer.invoke('show-error-dialog', 'Please select an item to delete');
+        return;
+      }
+      
+      const confirmDelete = confirm(`Are you sure you want to delete "${path.basename(selectedPath)}"?`);
+      if (!confirmDelete) return;
+      
+      const success = await ipcRenderer.invoke('delete-item', selectedPath);
+      if (success) {
+        loadDirectory(side, state[side].path);
+        state[side].selected = null;
+      } else {
+        ipcRenderer.invoke('show-error-dialog', 'Failed to delete item. It may be in use or you lack permissions.');
+      }
+    }
+    
+    // Create new folder
+    async function createNewFolder() {
+      const side = state.activePane;
+      const folderName = prompt('Enter folder name:');
+      if (!folderName) return;
+      
+      const newPath = await ipcRenderer.invoke('create-folder', state[side].path, folderName);
+      if (newPath) {
+        loadDirectory(side, state[side].path);
+      } else {
+        ipcRenderer.invoke('show-error-dialog', 'Failed to create folder. It may already exist.');
+      }
+    }
+    
+    // Refresh current pane
+    function refreshCurrentPane() {
+      const side = state.activePane;
+      loadDirectory(side, state[side].path);
+    }
+    
+    // Handle keyboard shortcuts
+    function handleKeyPress(e) {
+      // F5 to refresh
+      if (e.key === 'F5') {
+        refreshCurrentPane();
+        e.preventDefault();
+      }
+      
+      // Delete key
+      if (e.key === 'Delete') {
+        deleteSelected();
+        e.preventDefault();
+      }
+    }
+  </script>
+</body>
+</html>
